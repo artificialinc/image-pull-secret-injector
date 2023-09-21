@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/sapcc/pull-secrets-injector/mocks"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	v1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -284,4 +287,68 @@ func TestInject(t *testing.T) {
 		// Cleanup
 		client.DeleteAllOf(context.TODO(), &corev1.Namespace{})
 	}
+}
+
+// Use mockgen to generate the mock for the client to have tight control and replicate the race condition
+//go:generate mockery --srcpkg sigs.k8s.io/controller-runtime/pkg/client --name Client
+
+func TestCreateSecretRace(t *testing.T) {
+	client := mocks.NewClient(t)
+
+	secret := types.NamespacedName{Namespace: "default", Name: "secret"}
+
+	// The first get should return found
+	client.On("Get", mock.Anything, secret, new(corev1.Secret)).Return(nil)
+	client.On("Get", mock.Anything, types.NamespacedName{Namespace: "non-default", Name: ""}, new(corev1.Secret)).Return(apierrors.NewNotFound(schema.GroupResource{}, ""))
+
+	// Create errors with already found
+	client.On("Create", mock.Anything, mock.Anything, mock.Anything).Return(apierrors.NewAlreadyExists(schema.GroupResource{}, ""))
+
+	mtr := &PodMutator{
+		ImagePullSecret: secret,
+		Client:          client,
+		Log:             logf.Log.WithName("pull-secrets-injector"),
+		Registries:      []string{"docker.io", "ghcr.io"},
+	}
+
+	decoder, err := admission.NewDecoder(runtime.NewScheme())
+	assert.Equal(t, nil, err)
+	mtr.InjectDecoder(decoder)
+
+	request := admission.Request{
+		AdmissionRequest: v1.AdmissionRequest{
+			Kind: metav1.GroupVersionKind{
+				Version: "v1",
+				Kind:    "pods",
+			},
+			Operation: v1.Create,
+			Namespace: "non-default",
+			Object: runtime.RawExtension{
+				Raw: []byte(`{
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+        "name": "foo",
+        "namespace": "non-default"
+    },
+    "spec": {
+        "containers": [
+            {
+                "image": "docker.io/bar:v2",
+                "name": "bar"
+            }
+        ]
+    }
+}`),
+			},
+		},
+	}
+
+	resp := mtr.Handle(context.TODO(), request)
+
+	assert.Equal(t, 4, len(resp.Patches))
+
+	assert.Equal(t, true, resp.Allowed)
+
+	client.AssertExpectations(t)
 }

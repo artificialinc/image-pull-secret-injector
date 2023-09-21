@@ -98,8 +98,10 @@ func (a *PodMutator) injectImagePullSecret(ctx context.Context, pod *corev1.Pod,
 
 	if dockerHubImageFound {
 		if err := a.ensurePullSecretInNamespace(ctx, namespace); err != nil {
-			a.Log.Error(err, "Failed to ensure image pull secret", "namespace", namespace)
-			return
+			if !apierrors.IsAlreadyExists(err) {
+				a.Log.Error(err, "Failed to ensure image pull secret", "namespace", namespace)
+				return
+			}
 		}
 		a.Log.Info("injecting image pull secret into pod", "namespace", namespace, "name", name)
 		pod.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: a.ImagePullSecret.Name}}
@@ -122,7 +124,6 @@ func (a *PodMutator) ensurePullSecretInNamespace(ctx context.Context, namespace 
 	localPullSecret := new(corev1.Secret)
 	if err := a.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: pullSecret.Name}, localPullSecret); err != nil {
 		if apierrors.IsNotFound(err) {
-
 			pullSecret.Namespace = namespace
 			pullSecret.ResourceVersion = ""
 			a.Log.Info("Creating pull secret", "namespace", namespace, "name", pullSecret.Name)

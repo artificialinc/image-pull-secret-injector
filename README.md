@@ -17,3 +17,7 @@ For the example deployment (`make deploy`) the following requirements need to be
   * A rather new kustomize binary locally in the PATH
   * cert-manager needs to be installed in the cluster (for the automatic webhook tls setup)
 
+## Mock generation
+
+`go install go.uber.org/mock/mockgen@v0.3.0`
+`go generate ./...`
